@@ -1198,3 +1198,62 @@ fn minimax_default_provider_applies_minimax_api_key_env_not_openrouter() {
         "MiniMax profile must use minimax.env, not openrouter.env"
     );
 }
+
+/// The bug this guards: Anthropic rejects a catalog probe that omits
+/// `anthropic-version` with a 400 *before* checking the credential, so a valid
+/// key looks like a failure and the wire fills with 400s.
+#[test]
+fn catalog_auth_sends_x_api_key_and_version_for_anthropic() {
+    let client = reqwest::Client::new();
+    let request = apply_openai_compatible_catalog_auth(
+        client.get("https://api.anthropic.com/v1/models"),
+        ANTHROPIC_OPENAI_COMPAT_PROFILE.api_base,
+        "sk-ant-test",
+    )
+    .build()
+    .expect("request builds");
+
+    let headers = request.headers();
+    assert_eq!(
+        headers.get("x-api-key").map(|v| v.to_str().unwrap()),
+        Some("sk-ant-test")
+    );
+    assert_eq!(
+        headers
+            .get("anthropic-version")
+            .map(|v| v.to_str().unwrap()),
+        Some(ANTHROPIC_VERSION_HEADER_VALUE)
+    );
+    // Anthropic answers 401 to Bearer auth on this surface.
+    assert!(headers.get("authorization").is_none());
+}
+
+#[test]
+fn catalog_auth_sends_bearer_for_ordinary_openai_compatible_hosts() {
+    let client = reqwest::Client::new();
+    let request = apply_openai_compatible_catalog_auth(
+        client.get("https://api.openai.com/v1/models"),
+        OPENAI_COMPAT_PROFILE.api_base,
+        "sk-test",
+    )
+    .build()
+    .expect("request builds");
+
+    let headers = request.headers();
+    assert_eq!(
+        headers.get("authorization").map(|v| v.to_str().unwrap()),
+        Some("Bearer sk-test")
+    );
+    assert!(headers.get("x-api-key").is_none());
+    assert!(headers.get("anthropic-version").is_none());
+}
+
+#[test]
+fn anthropic_host_detection_is_case_insensitive_and_host_scoped() {
+    assert!(api_base_is_anthropic("https://API.Anthropic.com/v1"));
+    assert!(api_base_is_anthropic(
+        ANTHROPIC_OPENAI_COMPAT_PROFILE.api_base
+    ));
+    assert!(!api_base_is_anthropic("https://api.openai.com/v1"));
+    assert!(!api_base_is_anthropic("https://openrouter.ai/api/v1"));
+}

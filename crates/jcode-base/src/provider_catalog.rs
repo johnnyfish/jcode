@@ -588,6 +588,42 @@ pub fn force_apply_openai_compatible_profile_env(profile: Option<OpenAiCompatibl
     apply_openai_compatible_profile_env_impl(profile, false);
 }
 
+/// True when an OpenAI-compatible API base points at Anthropic's own host.
+///
+/// Anthropic's OpenAI-compatible surface is not purely OpenAI-shaped: it
+/// authenticates with `x-api-key` rather than `Authorization: Bearer`, and it
+/// rejects ANY request that omits `anthropic-version` with a 400
+/// `invalid_request_error` before it ever looks at the credential. So the
+/// generic `GET {api_base}/models` probes have to know about this one host.
+pub fn api_base_is_anthropic(api_base: &str) -> bool {
+    api_base.to_ascii_lowercase().contains("api.anthropic.com")
+}
+
+/// Version pin sent on Anthropic requests. Matches the native runtime so a
+/// probe and a real completion never disagree about response shape.
+pub const ANTHROPIC_VERSION_HEADER_VALUE: &str = "2023-06-01";
+
+/// Attach the right auth headers — and, for Anthropic, the mandatory
+/// `anthropic-version` — for a `GET {api_base}/models` catalog probe.
+///
+/// Centralised because three call sites make that probe (`/usage` key health,
+/// `auth-test` model discovery, and `provider-doctor`'s live catalog), and a
+/// site that forgets the version header does not fail loudly: Anthropic
+/// answers 400, the probe reports a generic "check failed", and the real cause
+/// is invisible unless you are watching the wire.
+pub fn apply_openai_compatible_catalog_auth(
+    request: reqwest::RequestBuilder,
+    api_base: &str,
+    api_key: &str,
+) -> reqwest::RequestBuilder {
+    if api_base_is_anthropic(api_base) {
+        return request
+            .header("x-api-key", api_key)
+            .header("anthropic-version", ANTHROPIC_VERSION_HEADER_VALUE);
+    }
+    request.header("Authorization", format!("Bearer {}", api_key))
+}
+
 fn apply_openai_compatible_profile_env_impl(
     profile: Option<OpenAiCompatibleProfile>,
     respect_named_profile_lock: bool,
